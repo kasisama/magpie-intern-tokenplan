@@ -1,0 +1,15 @@
+node_modules/
+.env
+.env.*
+!.env.example
+*.log
+*.tgz
+coverage/
+.tmp/
+.work/
+.sandbox/
+plugin-auth.json
+plugins.json
+plugin-providers.json
+.DS_Store
+Thumbs.db

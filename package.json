@@ -1,0 +1,17 @@
+{
+  "name": "opencode-tokenplan-auth",
+  "version": "0.1.0",
+  "description": "书生 TokenPlan API Key provider for Magpie / OpenCode",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": { ".": "./index.mjs", "./server": "./index.mjs" },
+  "files": ["index.mjs", "models.mjs", "transport.mjs", "README.md", "CHANGELOG.md", "LICENSE"],
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "engines": { "node": ">=20" },
+  "keywords": ["opencode", "opencode-plugin", "magpie", "tokenplan", "intern"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/kasisama/magpie-intern-tokenplan.git" },
+  "homepage": "https://github.com/kasisama/magpie-intern-tokenplan#readme",
+  "bugs": { "url": "https://github.com/kasisama/magpie-intern-tokenplan/issues" },
+  "magpie": { "maxConcurrency": 4 }
+}
