@@ -12,7 +12,11 @@ export const TokenPlanPlugin = async (_input, rawOptions) => {
     },
     auth: {
       provider: 'tokenplan',
-      methods: [{ type: 'api', label: 'TokenPlan API Key' }],
+      methods: [{ type: 'api', label: 'TokenPlan API Key', prompts: [{
+        type: 'text', key: 'email', message: 'Account label (optional)', placeholder: 'Personal / Work',
+        validate: value => typeof value === 'string' && value.length <= 100 && !/[\x00-\x1f\x7f]/.test(value)
+          ? undefined : 'Use up to 100 characters without control characters',
+      }] }],
       async loader(getAuth) {
         const key = requireKey(await getAuth())
         return { baseURL: BASE, apiKey: key, fetch: createTransport(key) }

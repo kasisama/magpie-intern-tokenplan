@@ -12,9 +12,9 @@ const plain = value => value !== null && typeof value === 'object' && !Array.isA
 const positive = value => Number.isSafeInteger(value) && value > 0
 function invalid() { throw new Error('TokenPlan options: unknown field, invalid type or token budget (output must not exceed context)') }
 export function parseOptions(raw = {}) {
-  if (!plain(raw) || Object.keys(raw).some(k => !['defaultOutputTokens', 'unknownContextTokens', 'modelOverrides'].includes(k))) invalid()
-  const options = { defaultOutputTokens: 4096, unknownContextTokens: 32768, modelOverrides: {}, ...raw }
-  if (!positive(options.defaultOutputTokens) || !positive(options.unknownContextTokens) || options.defaultOutputTokens > options.unknownContextTokens || !plain(options.modelOverrides)) invalid()
+  if (!plain(raw) || Object.keys(raw).some(k => !['defaultOutputTokens', 'unknownContextTokens', 'defaultToolCall', 'modelOverrides'].includes(k))) invalid()
+  const options = { defaultOutputTokens: 8192, unknownContextTokens: 32768, defaultToolCall: false, modelOverrides: {}, ...raw }
+  if (typeof options.defaultToolCall !== 'boolean' || !positive(options.defaultOutputTokens) || !positive(options.unknownContextTokens) || options.defaultOutputTokens > options.unknownContextTokens || !plain(options.modelOverrides)) invalid()
   for (const [id, override] of Object.entries(options.modelOverrides)) {
     if (!id || !plain(override) || Object.keys(override).some(k => !['contextTokens', 'outputTokens', 'toolCall', 'image'].includes(k))) invalid()
     for (const k of ['contextTokens', 'outputTokens']) if (Object.hasOwn(override, k) && !positive(override[k])) invalid()
@@ -23,23 +23,29 @@ export function parseOptions(raw = {}) {
   for (const id of new Set([...Object.keys(SNAPSHOT), ...Object.keys(options.modelOverrides)])) resolveModel(id, options)
   return structuredClone(options)
 }
-function resolveModel(id, options) {
+function resolveModel(id, options, base = {}) {
   const known = Object.hasOwn(SNAPSHOT, id) ? SNAPSHOT[id] : undefined
   const override = Object.hasOwn(options.modelOverrides, id) ? options.modelOverrides[id] : {}
-  const context = override.contextTokens ?? known?.[0] ?? options.unknownContextTokens
-  const output = override.outputTokens ?? options.defaultOutputTokens
-  if (output > context) invalid()
-  return { context, output, image: override.image ?? known?.[1] ?? false, toolCall: override.toolCall ?? false }
+  const context = override.contextTokens ?? base.limit?.context ?? known?.[0] ?? options.unknownContextTokens
+  // Only the local default is clamped; explicit model budgets must be valid.
+  const output = override.outputTokens ?? base.limit?.output ?? Math.min(options.defaultOutputTokens, context)
+  if (!positive(context) || !positive(output) || output > context) invalid()
+  return { context, output, image: override.image ?? base.capabilities?.input?.image ?? known?.[1] ?? false,
+    toolCall: override.toolCall ?? base.capabilities?.toolcall ?? options.defaultToolCall }
 }
-function model(id, options, normalized) {
-  const r = resolveModel(id, options)
+function model(id, options, normalized, metadata = {}) {
+  const base = structuredClone(metadata)
+  const r = resolveModel(id, options, base)
   const common = { id, name: id, limit: { context: r.context, output: r.output } }
   if (!normalized) return { ...common, reasoning: false, tool_call: r.toolCall, modalities: { input: r.image ? ['text', 'image'] : ['text'], output: ['text'] } }
-  return { ...common, providerID: 'tokenplan', api: { id, url: BASE, npm: SDK },
-    capabilities: { temperature: true, reasoning: false, toolcall: r.toolCall, attachment: r.image,
-      input: { text: true, image: r.image, audio: false, video: false, pdf: false },
-      output: { text: true, image: false, audio: false, video: false, pdf: false } },
-    options: {}, headers: {}, variants: {}, status: 'active', release_date: '' }
+  return { options: {}, headers: {}, variants: {}, status: 'active', release_date: '', ...common, ...base,
+    // Discovery controls membership and identity; transport stays on the official Chat API.
+    id, providerID: 'tokenplan', api: { id, url: BASE, npm: SDK },
+    limit: { ...base.limit, context: r.context, output: r.output },
+    capabilities: { temperature: true, reasoning: false, ...base.capabilities, toolcall: r.toolCall,
+      attachment: Object.hasOwn(options.modelOverrides[id] ?? {}, 'image') ? r.image : base.capabilities?.attachment ?? r.image,
+      input: { text: true, audio: false, video: false, pdf: false, ...base.capabilities?.input, image: r.image },
+      output: { text: true, image: false, audio: false, video: false, pdf: false, ...base.capabilities?.output } } }
 }
 export function configModels(options) {
   return Object.fromEntries(Object.keys(SNAPSHOT).map(id => [id, model(id, options, false)]))
@@ -50,7 +56,9 @@ export function configModels(options) {
 export function createModelDiscovery(options) {
   const cache = new Map()
   const ttl = 15 * 60 * 1000
-  return async (_provider, { auth } = {}) => {
+  return async (provider, { auth } = {}) => {
+    const materialize = ids => Object.fromEntries(ids.map(id => [id, model(id, options, true,
+      Object.hasOwn(provider?.models ?? {}, id) ? provider.models[id] : {})]))
     const key = requireKey(auth)
     const account = createHash('sha256').update(key).digest('hex')
     const now = Date.now()
@@ -65,9 +73,9 @@ export function createModelDiscovery(options) {
       const json = await boundedJSON(response, 1024 * 1024, 5000)
       if (!Array.isArray(json?.data) || json.data.some(row => !row || typeof row.id !== 'string' || !row.id || row.id.length > 256 || /[\x00-\x1f\x7f]/.test(row.id))) throw safeError('invalid model catalogue')
       const ids = [...new Set(json.data.map(row => row.id))].filter(id => !/^(system[-_ ]?one(?:$|[-_ ])|jev-|intern-decision(?:$|-))/i.test(id))
-      const result = Object.fromEntries(ids.map(id => [id, model(id, options, true)]))
+      const result = materialize(ids)
       cache.delete(account)
-      cache.set(account, { at: Date.now(), models: structuredClone(result) })
+      cache.set(account, { at: Date.now(), ids })
       while (cache.size > 64) cache.delete(cache.keys().next().value)
       return result
     } catch (error) {
@@ -76,7 +84,7 @@ export function createModelDiscovery(options) {
       if (!transient) cache.delete(account)
       const previous = cache.get(account)
       if (transient && previous) {
-        const result = structuredClone(previous.models)
+        const result = materialize(previous.ids)
         result[Symbol.for('magpie.fellBack')] = true
         return result
       }

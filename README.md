@@ -1,8 +1,8 @@
 # 书生 TokenPlan — Magpie 供应商插件
 
-零依赖 ESM 插件，版本 `0.1.0`，供应商 ID 固定为 `tokenplan`。使用 TokenPlan API Key，把 Magpie 已转换的 OpenAI Chat Completions 请求转发到固定官方地址 `https://discovery-api.intern-ai.org.cn/v1`。`@ai-sdk/openai-compatible` 是宿主选择的协议适配器，不是本包需要安装的依赖。
+零依赖 ESM 插件，版本 `0.1.1`，供应商 ID 固定为 `tokenplan`。使用 TokenPlan API Key，把 Magpie 已转换的 OpenAI Chat Completions 请求转发到固定官方地址 `https://discovery-api.intern-ai.org.cn/v1`。`@ai-sdk/openai-compatible` 是宿主选择的协议适配器，不是本包需要安装的依赖。
 
-支持文本、多轮消息、图片消息、工具消息及 SSE 透传。工具能力默认关闭，需要逐模型显式开启并实测。不实现浏览器登录、SystemOne、余额查询、美元价格估算、独立代理服务或客户端协议转换。
+支持文本、多轮消息、图片消息、工具消息及 SSE 透传。工具能力默认关闭，可通过全局默认或逐模型覆盖显式开启并实测。不实现浏览器登录、SystemOne、余额查询、美元价格估算、独立代理服务或客户端协议转换。
 
 ## 安装与登录
 
@@ -28,7 +28,7 @@ magpie plugin add "E:/MyFile/MyProject/AI/intern"
 magpie plugin login tokenplan
 ```
 
-在 Magpie 提示的 `TokenPlan API Key` 输入框输入密钥。也可在 Magpie 的插件界面添加这个目录，然后在「书生 TokenPlan」供应商上登录。不要把 Key 写入插件 options、代码、聊天记录或命令参数。Magpie 保存 `{type:"api",key}`；本插件不另存密钥。简单 API 登录本身仅保存输入，随后账号模型发现请求 `GET /v1/models` 才验证 Key。
+在 Magpie 提示的 `TokenPlan API Key` 输入框输入密钥。也可在 Magpie 的插件界面添加这个目录，然后在「书生 TokenPlan」供应商上登录。不要把 Key 写入插件 options、代码、聊天记录或命令参数。登录时可填写可选的 Account label（例如 Personal / Work，留空也可）。通过 Magpie 的 prompts 契约保存为 `metadata.email`，仅用作账号显示名称，不要求真实邮箱，不发送给上游。Magpie 保存 `{type:"api",key,metadata?}`；本插件不另存密钥。简单 API 登录本身仅保存输入，随后账号模型发现请求 `GET /v1/models` 才验证 Key。
 
 `magpie` 未加入 PATH 时，用本机 Magpie 可执行文件路径替换命令中的 `magpie`。例如 PowerShell 中使用 `& 'E:/SoftWare/Magpie-ai/magpie-windows-amd64.exe' plugin --json`。
 
@@ -64,26 +64,33 @@ magpie plugin rm 'E:\MyFile\MyProject\AI\intern'
 | minimax-m3 | 1M | 否 |
 | qwen3.8-27b | 256K | 是 |
 
-本地将 K/M 按 1024/1048576 换算。这是配置约定，不代表已测出平台精确边界。官方参考未给出逐模型最大输出和 Tool Call 保证。为满足宿主 normalized model 的数值 `limit`，默认输出预算为 4096 token；未知模型上下文预算为 32768 token。两者都是**本地兼容预算，不是官方限制**，也不会在 fetch 中截断内容或擅自重写用户的 `max_tokens`。
+本地将 K/M 按 1024/1048576 换算。这是配置约定，不代表已测出平台精确边界。官方参考未给出逐模型最大输出和 Tool Call 保证。为满足宿主 normalized model 的数值 `limit`，默认输出预算为 8192 token，为代码和较长回答预留更多空间，仍可按需调低；未知模型上下文预算为 32768 token。两者都是**本地兼容预算，不是官方限制**，也不会在 fetch 中截断内容或擅自重写用户的 `max_tokens`。
 
-未知模型默认仅文本，不声明工具、推理能力。config 使用 `tool_call/modalities`，账号 hook 使用 `api/limit/capabilities.toolcall`，二者由同一个解析器生成；账号 hook 不继承快照外的任意元数据。不会写入美元 cost、倍率、余额或永久 free 标记。宿主可能把缺失的 cost 展示为 0，这不表示平台免费。
+未知模型默认仅文本，不声明工具、推理能力。config 使用 `tool_call/modalities`，账号 hook 使用 `api/limit/capabilities.toolcall`，二者由同一个解析器生成；账号 hook 保留宿主 `provider.models` 的名称、上下文/输出预算、能力、variants、headers、options、cost 等元数据。插件本身不推算美元 cost、倍率、余额或永久 free 标记。宿主可能把缺失的 cost 展示为 0，这不表示平台免费。
 
 ## Options 与工具启用
 
-只接受三个顶层字段：
+只接受四个顶层字段：
 
 | 字段 | 默认值 | 含义 |
 | --- | --- | --- |
-| `defaultOutputTokens` | `4096` | 所有模型的默认输出兼容预算 |
+| `defaultOutputTokens` | `8192` | 没有显式模型预算时的默认输出兼容预算 |
+| `defaultToolCall` | `false` | 没有显式模型配置时，默认是否声明工具支持 |
 | `unknownContextTokens` | `32768` | 未知模型的上下文兼容预算 |
 | `modelOverrides` | `{}` | 精确模型 ID 到覆盖项的映射 |
 
 每个覆盖项只允许 `contextTokens`、`outputTokens`、`toolCall`、`image`。token 数必须为安全正整数，输出不能大于上下文；后两个字段必须是布尔值。未知字段、字符串数字、null 等会导致加载报错，错误不回显配置值。不接受 apiKey、baseURL、重试参数或任意请求头。覆盖项不会把不在账号 `data[]` 中的模型增加到账号列表。
 
+合并优先级：`modelOverrides` > 宿主 normalized `provider.models` > 已核对的官方上下文/图像快照及本地默认。账号 `/models` 只决定可见 ID，不采信任意远端能力字段。模型 ID、API URL 和 SDK 固定使用发现 ID 与官方 Chat 路径，避免元数据把请求导向其他目标。显式输出预算大于上下文时报错；只有默认输出预算会收缩到模型上下文以内。缓存保存账号 ID 集合，临时回退时仍应用当前配置。
+
+常用本地输出预算：`4096` 用于短回答、`8192` 为默认、`16384` 用于长代码输出；这些不是官方能力档位或保证。更大预算可能增加实际消耗，客户端显式传入的 `max_tokens` 不会被插件重写。
+
+批量启用工具的 options 示例：`{"defaultToolCall":true,"modelOverrides":{"intern-s2":{"toolCall":false}}}`。全局值是默认值，已有逐模型设置优先；设为 `false` 可恢复保守默认，显式开启的模型需同时改为 false。
+
 例如，对 `intern-s2` 显式开启工具并设置本地输出预算（这是待验证配置示例，不是已验证工具能力的声明）：
 
 ```sh
-magpie plugin options 'E:\MyFile\MyProject\AI\intern' '{"defaultOutputTokens":4096,"unknownContextTokens":32768,"modelOverrides":{"intern-s2":{"outputTokens":8192,"toolCall":true,"image":true}}}'
+magpie plugin options 'E:\MyFile\MyProject\AI\intern' '{"defaultOutputTokens":8192,"unknownContextTokens":32768,"modelOverrides":{"intern-s2":{"outputTokens":8192,"toolCall":true,"image":true}}}'
 magpie plugin options 'E:\MyFile\MyProject\AI\intern'
 ```
 
@@ -142,6 +149,8 @@ npm test
 # 已有 Bun 时
 bun test test
 ```
+
+GitHub Actions 在 main 更新、版本标签及 PR 时运行 Node 24 / Bun 1.4.3 测试、语法检查和 npm pack 检查；不发布 npm 包。
 
 测试使用假 Key 与模拟响应，涵盖模型契约、账号隔离/缓存、严格 options、固定目标、工具/图片请求保真、SSE 分片和取消、错误状态与有限正文检查。依赖列表为空。
 

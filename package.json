@@ -1,6 +1,6 @@
 {
   "name": "opencode-tokenplan-auth",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "书生 TokenPlan API Key provider for Magpie / OpenCode",
   "type": "module",
   "main": "./index.mjs",

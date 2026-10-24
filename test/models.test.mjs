@@ -25,7 +25,7 @@ test('unknown model budgets and config overrides use the same resolver', async (
   await withFetch(async () => catalogue(['unknown']), async () => {
     const h = await entry.TokenPlanPlugin({})
     const m = (await h.provider.models({}, auth('fake-a'))).unknown
-    assert.deepEqual(m.limit, { context: 32768, output: 4096 })
+    assert.deepEqual(m.limit, { context: 32768, output: 8192 })
     assert.equal(m.capabilities.reasoning, false)
     assert.equal(m.capabilities.input.image, false)
     const custom = await entry.TokenPlanPlugin({}, { modelOverrides: { 'intern-s2': { toolCall: true, outputTokens: 8000 } } })
@@ -34,6 +34,61 @@ test('unknown model budgets and config overrides use the same resolver', async (
     assert.equal(cfg.provider.tokenplan.models['intern-s2'].limit.output, 8000)
   })
 })
+test('discovery merges provider metadata without adding unavailable models or mutating inputs', async () => {
+  await withFetch(async () => catalogue(['intern-s2', 'small']), async () => {
+    const h = await entry.TokenPlanPlugin({}, { defaultToolCall: true, modelOverrides: { 'intern-s2': { outputTokens: 12000, image: false } } })
+    const provider = { models: {
+      'intern-s2': { name: 'My model', limit: { context: 64000, output: 16000, input: 48000 }, capabilities: { toolcall: false, input: { image: true } }, variants: { low: {} }, cost: { input: 1 }, api: { id: 'wrong', url: 'https://wrong', npm: 'wrong' } },
+      small: { limit: { context: 2048 } }, unavailable: { name: 'Hidden' },
+    } }
+    const before = structuredClone(provider)
+    const list = await h.provider.models(provider, auth('fake-merge'))
+    assert.deepEqual(Object.keys(list), ['intern-s2', 'small'])
+    assert.equal(list['intern-s2'].name, 'My model')
+    assert.deepEqual(list['intern-s2'].limit, { context: 64000, input: 48000, output: 12000 })
+    assert.equal(list['intern-s2'].capabilities.toolcall, false)
+    assert.equal(list['intern-s2'].capabilities.input.image, false)
+    assert.equal(list['intern-s2'].capabilities.attachment, false)
+    assert.equal(list['intern-s2'].api.id, 'intern-s2')
+    assert.equal(list.small.limit.output, 2048)
+    assert.equal(list.small.capabilities.toolcall, true)
+    list['intern-s2'].variants.low.changed = true
+    assert.deepEqual(provider, before)
+  })
+})
+test('explicit per-model values win over global defaults and provider metadata', async () => {
+  await withFetch(async () => catalogue(['intern-s2', 'custom']), async () => {
+    const h = await entry.TokenPlanPlugin({}, { defaultToolCall: true, defaultOutputTokens: 16384,
+      modelOverrides: { 'intern-s2': { toolCall: false }, custom: { contextTokens: 64000, toolCall: true } } })
+    const cfg = {}; await h.config(cfg)
+    assert.equal(cfg.provider.tokenplan.models['intern-s2'].tool_call, false)
+    assert.equal(cfg.provider.tokenplan.models['Atria-Dawn'].tool_call, true)
+    const list = await h.provider.models({ models: {
+      'intern-s2': { limit: { output: 20000 } },
+      custom: { limit: { context: 32000, output: 12000 }, capabilities: { toolcall: false } },
+    } }, auth('fake-precedence'))
+    assert.equal(list['intern-s2'].limit.output, 20000)
+    assert.equal(list['intern-s2'].capabilities.toolcall, false)
+    assert.equal(list.custom.limit.context, 64000)
+    assert.equal(list.custom.limit.output, 12000)
+    assert.equal(list.custom.capabilities.toolcall, true)
+  })
+})
+
+test('cached membership uses current metadata and rejects explicit oversized output', async () => {
+  let fail = false
+  await withFetch(async () => { if (fail) throw new Error('offline'); return catalogue(['small']) }, async () => {
+    const h = await entry.TokenPlanPlugin({})
+    await h.provider.models({}, auth('fake-current'))
+    fail = true
+    const list = await h.provider.models({ models: { small: { name: 'Updated', limit: { context: 2000, output: 1000 } } } }, auth('fake-current'))
+    assert.equal(list.small.name, 'Updated')
+    assert.equal(list.small.limit.output, 1000)
+    assert.equal(list[Symbol.for('magpie.fellBack')], true)
+    await assert.rejects(h.provider.models({ models: { small: { limit: { context: 2000, output: 3000 } } } }, auth('fake-current')))
+  })
+})
+
 test('interrupted successful response bodies preserve the account cache', async () => {
   let broken = false
   await withFetch(async () => broken ? new Response(new ReadableStream({ start(c) { c.error(new TypeError('terminated private account data')) } })) : catalogue(['intern-s2']), async () => {
